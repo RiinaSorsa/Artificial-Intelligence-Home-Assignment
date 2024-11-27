@@ -1,0 +1,220 @@
+#Solu 1 : 
+import os
+import shutil
+from sklearn.model_selection import train_test_split
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+from PIL import Image
+import numpy as np
+
+
+#Solu 2 : 
+# Polut kuville ja maskeille
+image_dir_360 = r"C:\Users\RiinaSorsa\Tekoaly Kurssi\Liver_Medical_Image _Datasets\Liver_Medical_Image _Datasets\Images"
+mask_dir_360 = r"C:\Users\RiinaSorsa\Tekoaly Kurssi\Liver_Medical_Image _Datasets\Liver_Medical_Image _Datasets\Labels"
+
+# Määritellään polut koulutuksen ja validoinnin kansioille
+train_image_dir = './train_images'
+train_mask_dir = './train_masks'
+val_image_dir = './val_images'
+val_mask_dir = './val_masks'
+
+# Luo hakemistot, jos niitä ei ole
+os.makedirs(train_image_dir, exist_ok=True)
+os.makedirs(train_mask_dir, exist_ok=True)
+os.makedirs(val_image_dir, exist_ok=True)
+os.makedirs(val_mask_dir, exist_ok=True)
+
+#Solu 3 :
+# Listaa kaikki tiedostot datasetistä
+image_files = sorted(os.listdir(image_dir_360))
+mask_files = sorted(os.listdir(mask_dir_360))
+
+# Varmista, että kuvat ja maskit ovat paritettu oikein
+for img in image_files:
+    mask_name = f"{os.path.splitext(img)[0]}_mask{os.path.splitext(img)[1]}"  # Lisätään _mask päätteeksi
+    if mask_name not in mask_files:
+        print(f"Puuttuva maski: {mask_name} (ei löydy maskihakemistosta)")
+    else:
+        print(f"Maski löytyy: {mask_name}")
+
+#Solu 4 :
+# Jaa dataset koulutukseen ja validointiin
+train_images, val_images = train_test_split(image_files, test_size=0.2, random_state=42)
+
+# Kopioidaan tiedostot oikeisiin hakemistoihin
+for file in train_images:
+    mask_name = f"{os.path.splitext(file)[0]}_mask{os.path.splitext(file)[1]}"  # Maskin nimi
+    mask_path = os.path.join(mask_dir_360, mask_name)
+    
+    # Tarkistetaan, että maski on olemassa
+    if os.path.exists(mask_path):
+        shutil.copy(os.path.join(image_dir_360, file), os.path.join(train_image_dir, file))
+        shutil.copy(mask_path, os.path.join(train_mask_dir, mask_name))
+    else:
+        print(f"Maskitiedostoa ei löydy: {mask_name}")
+
+for file in val_images:
+    mask_name = f"{os.path.splitext(file)[0]}_mask{os.path.splitext(file)[1]}"  # Maskin nimi
+    mask_path = os.path.join(mask_dir_360, mask_name)
+    
+    # Tarkistetaan, että maski on olemassa
+    if os.path.exists(mask_path):
+        shutil.copy(os.path.join(image_dir_360, file), os.path.join(val_image_dir, file))
+        shutil.copy(mask_path, os.path.join(val_mask_dir, mask_name))
+    else:
+        print(f"Maskitiedostoa ei löydy: {mask_name}")
+
+print(f"Train images: {len(train_images)}, Validation images: {len(val_images)}")
+
+#Solu 5 : 
+transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomVerticalFlip(),
+    transforms.RandomRotation(30),
+    transforms.ToTensor()
+])
+
+class SegmentationDataset(Dataset):
+    def __init__(self, image_dir, mask_dir, transform=None):
+        self.image_dir = image_dir
+        self.mask_dir = mask_dir
+        self.image_names = sorted(os.listdir(image_dir))
+        self.transform = transform
+    
+    def __len__(self):
+        return len(self.image_names)
+    
+    def __getitem__(self, idx):
+        img_name = self.image_names[idx]
+        img_path = os.path.join(self.image_dir, img_name)
+        mask_name = img_name.replace('.png', '_mask.png')  # Muodostetaan maskin nimi
+        mask_path = os.path.join(self.mask_dir, mask_name)
+        
+        # Varmistetaan, että maski ja kuva ovat olemassa
+        if not os.path.exists(mask_path):
+            raise FileNotFoundError(f"Maski puuttuu: {mask_path}")
+        
+        image = Image.open(img_path).convert('L')  # Harmaasävykuvat
+        mask = Image.open(mask_path).convert('L')
+        
+        if self.transform:
+            image = self.transform(image)
+            mask = self.transform(mask)
+        
+        return image, mask
+
+# Ladataan datasetit
+train_dataset = SegmentationDataset(image_dir=train_image_dir, mask_dir=train_mask_dir, transform=transform)
+val_dataset = SegmentationDataset(image_dir=val_image_dir, mask_dir=val_mask_dir, transform=transform)
+
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
+
+#Solu 6 :
+class UNet(nn.Module):
+    def __init__(self, in_channels=1, out_channels=1):
+        super(UNet, self).__init__()
+        # Encoder-osat
+        self.enc1 = self.conv_block(in_channels, 64)
+        self.enc2 = self.conv_block(64, 128)
+        self.enc3 = self.conv_block(128, 256)
+        self.enc4 = self.conv_block(256, 512)
+        self.enc5 = self.conv_block(512, 1024)
+
+        # Decoder-osat
+        self.upconv4 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)  # 1024->512
+        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)  # 512->256
+        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)   # 256->128
+        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)    # 128->64
+
+        # Lopullinen konvoluutio
+        self.final = nn.Conv2d(64, out_channels, kernel_size=1)
+
+    def conv_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2)
+        )
+
+    def forward(self, x):
+        enc1 = self.enc1(x)
+        enc2 = self.enc2(enc1)
+        enc3 = self.enc3(enc2)
+        enc4 = self.enc4(enc3)
+        enc5 = self.enc5(enc4)
+
+        # Yhdistetään enc5 ja upconv4
+        up4 = self.upconv4(enc5)
+        up4 = torch.cat([up4, enc4], dim=1)  # Yhdistetään 1024 + 512 kanavaa
+
+        # Yhdistetään up4 ja enc3 (jolloin saadaan 512 + 256 kanavaa)
+        up3 = self.upconv3(up4)
+        up3 = torch.cat([up3, enc3], dim=1)  # Yhdistetään 512 + 256 kanavaa
+
+        # Yhdistetään up3 ja enc2 (jolloin saadaan 256 + 128 kanavaa)
+        up2 = self.upconv2(up3)
+        up2 = torch.cat([up2, enc2], dim=1)  # Yhdistetään 256 + 128 kanavaa
+
+        # Yhdistetään up2 ja enc1 (jolloin saadaan 128 + 64 kanavaa)
+        up1 = self.upconv1(up2)
+        up1 = torch.cat([up1, enc1], dim=1)  # Yhdistetään 128 + 64 kanavaa
+
+        out = self.final(up1)
+        return out
+
+#Solu 7 : 
+# Optimointi ja häviöfunktio
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+model = UNet(in_channels=1, out_channels=1).to(device)
+criterion = nn.BCEWithLogitsLoss()  # Koska se on binäärinen segmentointi
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+
+#Solu 8 : 
+# Koulutuslooppi
+num_epochs = 20
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
+    
+    for i, (inputs, targets) in enumerate(train_loader):
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+        
+        # Nollataan gradientit
+        optimizer.zero_grad()
+        
+        # Suoritetaan eteenpäin
+        outputs = model(inputs)
+        
+        # Lasketaan häviö ja takaperinlevitys
+        loss = criterion(outputs, targets)
+        loss.backward()
+        
+        # Päivitetään painot
+        optimizer.step()
+        
+        running_loss += loss.item()
+    
+    print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss/len(train_loader)}')
+
+    # Validointi
+    if (epoch+1) % 5 == 0:
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for inputs, targets in val_loader:
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                val_loss += loss.item()
+        
+        print(f'Validation Loss after Epoch {epoch+1}: {val_loss/len(val_loader)}')
